@@ -36,11 +36,83 @@ export default function PropertyDetailPage() {
   const [property, setProperty] = useState<Property | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // --- 🎬 模块4：AI视频 Agent 状态管理 ---
+  const [isVideoLoading, setIsVideoLoading] = useState(false);
+  const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string>('');
+  const [videoStatus, setVideoStatus] = useState<string>('');
+  const [rawStatus, setRawStatus] = useState<string>('idle'); // 新增：保存纯净的云端原始状态供渲染
+
+  // 视频异步调度接口触发器（带智能轮询的高阶版本）
+  const handleGenerateVideo = async () => {
+    if (!property) return;
+    try {
+      setIsVideoLoading(true);
+      setRawStatus('planned');
+      setVideoStatus('🎬 正在唤醒云端 AI 多图流剪辑流水线...');
+      setGeneratedVideoUrl(''); // 开启时先清空旧播放器
+
+      const res = await fetch('/api/video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: property.title,
+          price: property.price,
+          description: property.description,
+          images: property.image_urls || [], // 完美把3张图全部送过去
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '云端接口拒绝请求');
+
+      if (data.success && data.id) {
+        const taskId = data.id;
+        let attempts = 0;
+
+        const interval = setInterval(async () => {
+          attempts++;
+          setVideoStatus(`正在同步多图转场、配音合成进度... (${attempts}/12)`);
+
+          if (attempts > 12) {
+            clearInterval(interval);
+            setIsVideoLoading(false);
+            setRawStatus('failed');
+            setVideoStatus('❌ 渲染超时，请稍后刷新页面重新生成');
+            return;
+          }
+
+          // 向我们刚写好的 status 接口问进度
+          const statusRes = await fetch(`/api/video/status?id=${taskId}`);
+          const statusData = await statusRes.json();
+          
+          setRawStatus(statusData.status); // 更新底层的纯净状态（planned, rendering, succeeded等）
+
+          if (statusData.status === 'succeeded') {
+            clearInterval(interval);
+            // 🌟 加上时间戳，强制破坏浏览器缓存，百分之百唤醒播放画面！
+            setGeneratedVideoUrl(`${statusData.videoUrl}?t=${new Date().getTime()}`);
+            setVideoStatus('✅ 多图流短视频一键生成大获全胜！');
+            setIsVideoLoading(false);
+          } else if (statusData.status === 'failed') {
+            clearInterval(interval);
+            setIsVideoLoading(false);
+            setVideoStatus('❌ 云端渲染遭遇未知崩溃');
+          }
+        }, 2500);
+      }
+    } catch (err: any) {
+      console.error(err);
+      setRawStatus('failed');
+      setVideoStatus(`❌ 发生异常: ${err.message}`);
+      setIsVideoLoading(false);
+    }
+  };
 
   // --- ✨ AI 营销中枢状态管理 ---
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string>('');
-  
+
   // 存储解构后的 4 个平台文案对象
   const [parsedAiContent, setParsedAiContent] = useState<{
     xhs: string;
@@ -49,7 +121,7 @@ export default function PropertyDetailPage() {
     seo: string;
   } | null>(null);
 
-  // 控制当前哪一个平台标签处于高亮激活状态 (默认为小红书 xhs)
+  // 控制当前哪一个平台标签处于高亮激活状态
   const [activeTab, setActiveTab] = useState<'xhs' | 'tiktok' | 'whatsapp' | 'seo'>('xhs');
 
   useEffect(() => {
@@ -81,10 +153,10 @@ export default function PropertyDetailPage() {
     fetchPropertyDetail();
   }, [propertyId]);
 
-  // --- ✨ 核心：请求并精准解构文案数据流 ---
+  // 请求并精准解构文案数据流
   const generateAiMarketingText = async () => {
     if (!property) return;
-    
+
     setAiLoading(true);
     setAiError('');
     setParsedAiContent(null);
@@ -108,7 +180,6 @@ export default function PropertyDetailPage() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'AI 接口呼叫失败');
 
-      // 核心拆分算法：利用后端约定的 === 分隔符切开文本
       const blocks = data.text.split('===').map((b: string) => b.trim());
 
       setParsedAiContent({
@@ -117,8 +188,7 @@ export default function PropertyDetailPage() {
         whatsapp: blocks[2] || '暂无内容',
         seo: blocks[3] || '暂无内容'
       });
-      
-      // 默认让第一个有内容的 Tab 亮起
+
       setActiveTab('xhs');
 
     } catch (err: any) {
@@ -129,12 +199,11 @@ export default function PropertyDetailPage() {
     }
   };
 
-  // --- ✨ 新增：只复制当前激活 Tab 内的干净文案 ---
   const handleCopyCurrentTabText = () => {
     if (!parsedAiContent) return;
     const currentText = parsedAiContent[activeTab];
     navigator.clipboard.writeText(currentText);
-    
+
     const platformNames = { xhs: '📕 小红书爆款', tiktok: '🎬 TikTok 脚本', whatsapp: '💬 WhatsApp 转发', seo: '🔍 SEO 优化标题' };
     alert(`📋 复制成功！已单独将【${platformNames[activeTab]}】文案注入您的剪贴板，快去发布吧！`);
   };
@@ -167,7 +236,6 @@ export default function PropertyDetailPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 pb-16">
-      {/* 顶部导航纯净栏 */}
       <div className="bg-white border-b border-gray-100 sticky top-0 z-50">
         <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
           <button onClick={() => router.push('/')} className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
@@ -204,7 +272,7 @@ export default function PropertyDetailPage() {
               <span className="text-sm text-gray-400 font-medium">{property.area_sqft ? `${property.area_sqft} sqft` : '暂无面积数据'}</span>
             </div>
             <h1 className="text-2xl font-black text-gray-900">{property.title}</h1>
-            
+
             <div className="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-xl border border-gray-100">
               <div className="text-center py-2 bg-white rounded-lg"><p className="text-xs text-gray-400">卧室数量</p><p className="text-lg font-bold text-gray-800 mt-0.5">🛏️ {property.bedrooms} 间</p></div>
               <div className="text-center py-2 bg-white rounded-lg"><p className="text-xs text-gray-400">洗手间数量</p><p className="text-lg font-bold text-gray-800 mt-0.5">🚿 {property.bathrooms} 间</p></div>
@@ -233,7 +301,7 @@ export default function PropertyDetailPage() {
           )}
         </div>
 
-        {/* === 右侧固定栏：价格看板 + ✨ AI 极速矩阵分发中枢 === */}
+        {/* === 右侧固定栏：价格看板 + AI 营销控制中枢 === */}
         <div className="md:col-span-4 space-y-6">
           <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm sticky top-24 space-y-5">
             <div>
@@ -252,22 +320,152 @@ export default function PropertyDetailPage() {
               <button
                 onClick={generateAiMarketingText}
                 disabled={aiLoading}
-                className={`w-full py-3 rounded-xl text-xs font-black tracking-wide transition-all ${
-                  aiLoading 
-                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700 animate-pulse' 
-                    : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white hover:from-blue-600 hover:to-indigo-700 active:scale-[0.99] shadow-lg shadow-indigo-950'
-                }`}
+                className={`w-full py-3 rounded-xl text-xs font-black tracking-wide transition-all ${aiLoading
+                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700 animate-pulse'
+                  : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white hover:from-blue-600 hover:to-indigo-700 active:scale-[0.99] shadow-lg shadow-indigo-950'
+                  }`}
               >
                 {aiLoading ? '🤖 正在全网渠道矩阵构思中...' : '✨ 一键生成跨平台全网获客文案'}
               </button>
               {aiError && <div className="p-2.5 bg-red-500/10 border border-red-500/20 text-red-400 text-[11px] rounded-lg">⚠️ 触发异常: {aiError}</div>}
             </div>
 
-            {/* ✨ 核心大招：多 Tab 独立分发视窗面板 */}
+            <div data-testid="video-generator-section">
+              {/* 🎬 模块4：AI视频 Agent 入口核心按钮 */}
+              <button
+                onClick={handleGenerateVideo}
+                disabled={isVideoLoading}
+                style={{
+                  width: '100%',
+                  marginTop: '12px',
+                  padding: '12px 16px',
+                  fontSize: '11px',
+                  fontWeight: '900',
+                  letterSpacing: '0.05em',
+                  borderRadius: '12px',
+                  boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  border: 'none',
+                  cursor: isVideoLoading ? 'not-allowed' : 'pointer',
+                  background: isVideoLoading 
+                    ? 'linear-gradient(to right, #1e293b, #334155)'
+                    : 'linear-gradient(to right, #9333ea, #4f46e5)',
+                  color: isVideoLoading ? '#64748b' : '#ffffff',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                {isVideoLoading ? (
+                  <>
+                    <span style={{ animation: 'spin 1s linear infinite' }}>🔄</span>
+                    <span>{videoStatus}</span>
+                  </>
+                ) : (
+                  <>
+                    <span>🎬</span>
+                    <span>一键生成 TikTok/Shorts 营销短视频</span>
+                  </>
+                )}
+              </button>
+
+              {/* 📺 视频云端打包完成后的高清播放器（全新解耦绑定） */}
+              {(isVideoLoading || generatedVideoUrl) && (
+                <div style={{
+                  marginTop: '16px',
+                  padding: '12px',
+                  background: 'rgba(15, 23, 42, 0.9)',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(168, 85, 247, 0.4)',
+                  textAlign: 'left'
+                }}>
+                  <p style={{
+                    fontSize: '11px',
+                    color: '#c084fc',
+                    marginBottom: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontWeight: '500'
+                  }}>
+                    <span>🎉</span> 
+                    视频渲染中心（当前状态: 
+                    <span style={{ 
+                      fontFamily: 'monospace', 
+                      color: '#ffffff', 
+                      textDecoration: 'underline' 
+                    }}>
+                      {rawStatus}
+                    </span>
+                    ）
+                  </p>
+                  
+                  <div style={{
+                    position: 'relative',
+                    width: '100%',
+                    borderRadius: '8px',
+                    overflow: 'hidden',
+                    boxShadow: 'inset 0 2px 4px 0 rgba(0, 0, 0, 0.06)',
+                    background: '#000000',
+                    aspectRatio: '9/16'
+                  }}>
+                    {generatedVideoUrl ? (
+                      <video
+                        key={generatedVideoUrl}
+                        src={generatedVideoUrl}
+                        controls
+                        autoPlay
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'contain'
+                        }}
+                      />
+                    ) : (
+                      <div style={{
+                        position: 'absolute',
+                        inset: 0,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#64748b',
+                        gap: '12px',
+                        padding: '16px',
+                        textAlign: 'center'
+                      }}>
+                        <div style={{
+                          width: '32px',
+                          height: '32px',
+                          borderWidth: '2px',
+                          borderStyle: 'solid',
+                          borderColor: '#a855f7',
+                          borderTopColor: 'transparent',
+                          borderRadius: '9999px',
+                          animation: 'spin 1s linear infinite'
+                        }}></div>
+                        <p style={{ fontSize: '11px', color: '#94a3b8' }}>{videoStatus}</p>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <p style={{
+                    fontSize: '10px',
+                    color: '#9ca3af',
+                    marginTop: '8px',
+                    textAlign: 'center',
+                    lineHeight: '1.5'
+                  }}>
+                    提示：多图轮播转场与内置中文 TTS 语音同步拼装约需 10 秒。
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* ✨ 跨平台分发视窗面板 */}
             {parsedAiContent && (
               <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden flex flex-col animate-fadeIn">
-                
-                {/* 网格化高质感跨平台 Tab 开关切换栏 */}
                 <div className="grid grid-cols-4 bg-gray-50 border-b border-gray-100 p-1 gap-1">
                   {[
                     { id: 'xhs', label: '📕 小红书' },
@@ -278,22 +476,20 @@ export default function PropertyDetailPage() {
                     <button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id as any)}
-                      className={`py-1.5 text-[11px] font-bold rounded-lg transition-all text-center ${
-                        activeTab === tab.id
-                          ? 'bg-white text-gray-900 shadow-xs border border-gray-200/50'
-                          : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100/50'
-                      }`}
+                      className={`py-1.5 text-[11px] font-bold rounded-lg transition-all text-center ${activeTab === tab.id
+                        ? 'bg-white text-gray-900 shadow-xs border border-gray-200/50'
+                        : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100/50'
+                        }`}
                     >
                       {tab.label}
                     </button>
                   ))}
                 </div>
 
-                {/* 动态内容渲染落地区 */}
                 <div className="p-4 bg-white relative">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">当前频道实时预览</span>
-                    <button 
+                    <button
                       onClick={handleCopyCurrentTabText}
                       className="text-[11px] text-blue-600 font-bold hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md transition-colors"
                     >
@@ -301,16 +497,14 @@ export default function PropertyDetailPage() {
                     </button>
                   </div>
 
-                  {/* 核心内容显示：完美阻断跨频道污染 */}
                   <div className="h-[260px] overflow-y-auto text-xs text-gray-600 font-sans leading-relaxed whitespace-pre-wrap bg-gray-50/70 p-3 rounded-xl border border-gray-100">
                     {parsedAiContent[activeTab]}
                   </div>
                 </div>
-
               </div>
             )}
 
-            <button 
+            <button
               onClick={() => alert('已成功复制当前房源唯一链接！')}
               className="w-full py-2.5 bg-gray-50 hover:bg-gray-100 text-gray-500 font-medium rounded-xl text-xs transition-colors border border-gray-100"
             >
