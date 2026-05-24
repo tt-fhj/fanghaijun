@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 
 export async function POST(request: Request) {
   try {
@@ -7,10 +8,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: '未在服务器配置 CREATOMATE_API_KEY 环境变量' }, { status: 500 });
     }
 
-    const body = await request.json();
-    const { title, price, description, images } = body;
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+    
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return NextResponse.json({ error: '未在服务器配置 Supabase 环境变量' }, { status: 500 });
+    }
 
-    console.log('🚀 接收到的请求数据:', { title, price, imagesCount: images?.length });
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+    const body = await request.json();
+    const { title, price, description, images, propertyId } = body;
+
+    console.log('🚀 接收到的请求数据:', { title, price, imagesCount: images?.length, propertyId });
 
     // 🌟 自动获取多张图片，最多取 3 张，如果没有则用高档占位图
     const sourceImages = images && images.length > 0 
@@ -112,10 +122,27 @@ export async function POST(request: Request) {
 
     console.log('✅ Creatomate 返回成功:', finalData);
 
+    // 如果有 propertyId，就将视频 URL 保存到 Supabase
+    let savedVideoUrl = finalData.url;
+    if (propertyId && finalData.status === 'succeeded' && finalData.url) {
+      console.log('💾 正在将视频 URL 保存到 Supabase...', propertyId, finalData.url);
+      const { error: updateError } = await supabase
+        .from('properties')
+        .update({ video_url: finalData.url })
+        .eq('id', propertyId);
+      
+      if (updateError) {
+        console.error('❌ Supabase 更新失败:', updateError);
+      } else {
+        console.log('✅ 视频 URL 已成功保存到 Supabase');
+        savedVideoUrl = finalData.url;
+      }
+    }
+
     return NextResponse.json({
       success: true,
       id: finalData.id,
-      videoUrl: finalData.url,
+      videoUrl: savedVideoUrl,
       status: finalData.status || 'planned'
     });
 

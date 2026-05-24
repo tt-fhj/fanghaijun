@@ -41,29 +41,65 @@ export default function PropertyDetailPage() {
   const [isVideoLoading, setIsVideoLoading] = useState(false);
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string>('');
   const [videoStatus, setVideoStatus] = useState<string>('');
-  const [rawStatus, setRawStatus] = useState<string>('idle'); // 新增：保存纯净的云端原始状态供渲染
+  const [rawStatus, setRawStatus] = useState<string>('idle');
+
+  // 清理 URL 的辅助函数
+  const cleanUrl = (url: string | null | undefined): string => {
+    if (!url) return '';
+    return url.trim().replace(/^`|`$/g, '');
+  };
+
+  // 页面加载时，如果房源已有 video_url，直接使用
+  useEffect(() => {
+    if (property && property.video_url) {
+      const cleanedUrl = cleanUrl(property.video_url);
+      console.log('📄 从 Supabase 加载视频 URL:', {
+        original: property.video_url,
+        cleaned: cleanedUrl
+      });
+      setGeneratedVideoUrl(cleanedUrl);
+      setRawStatus('succeeded');
+    }
+  }, [property]);
 
   // 视频异步调度接口触发器（带智能轮询的高阶版本）
   const handleGenerateVideo = async () => {
     if (!property) return;
+    
+    console.log('========================================');
+    console.log('🎬 开始生成视频');
+    console.log('📋 房源数据:', {
+      id: property.id,
+      idType: typeof property.id,
+      title: property.title,
+      hasVideoUrl: !!property.video_url
+    });
+    console.log('========================================');
+    
     try {
       setIsVideoLoading(true);
       setRawStatus('planned');
       setVideoStatus('🎬 正在唤醒云端 AI 多图流剪辑流水线...');
-      setGeneratedVideoUrl(''); // 开启时先清空旧播放器
+
+      const requestBody = {
+        title: property.title,
+        price: property.price,
+        description: property.description,
+        images: property.image_urls || [],
+        propertyId: property.id,
+      };
+      
+      console.log('📤 发送给 /api/video 的请求体:', requestBody);
 
       const res = await fetch('/api/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: property.title,
-          price: property.price,
-          description: property.description,
-          images: property.image_urls || [], // 完美把3张图全部送过去
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await res.json();
+      console.log('📥 /api/video 响应:', data);
+      
       if (!res.ok) throw new Error(data.error || '云端接口拒绝请求');
 
       if (data.success && data.id) {
@@ -82,16 +118,48 @@ export default function PropertyDetailPage() {
             return;
           }
 
-          // 向我们刚写好的 status 接口问进度
-          const statusRes = await fetch(`/api/video/status?id=${taskId}`);
+          // 向 status 接口问进度，同时传递 propertyId
+          const statusUrl = `/api/video/status?id=${taskId}&propertyId=${property.id}`;
+          console.log(`🔍 轮询 ${statusUrl}`);
+          
+          const statusRes = await fetch(statusUrl);
           const statusData = await statusRes.json();
           
-          setRawStatus(statusData.status); // 更新底层的纯净状态（planned, rendering, succeeded等）
+          console.log('📥 状态查询响应:', statusData);
+          setRawStatus(statusData.status);
 
           if (statusData.status === 'succeeded') {
             clearInterval(interval);
-            // 🌟 加上时间戳，强制破坏浏览器缓存，百分之百唤醒播放画面！
-            setGeneratedVideoUrl(`${statusData.videoUrl}?t=${new Date().getTime()}`);
+            const cleanedVideoUrl = cleanUrl(statusData.videoUrl);
+            const newVideoUrl = `${cleanedVideoUrl}?t=${new Date().getTime()}`;
+            console.log('✅ 视频生成成功:', {
+              original: statusData.videoUrl,
+              cleaned: cleanedVideoUrl,
+              withCacheBust: newVideoUrl
+            });
+            setGeneratedVideoUrl(newVideoUrl);
+            
+            // 同时更新 property 对象中的 video_url（存储清理后的版本）
+            setProperty(prev => prev ? { ...prev, video_url: cleanedVideoUrl } : null);
+            
+            // 🌟 前端直接更新 Supabase 作为备选方案
+            console.log('🔄 前端尝试直接更新 Supabase...');
+            try {
+              const { error } = await supabase
+                .from('properties')
+                .update({ video_url: cleanedVideoUrl })
+                .eq('id', property.id);
+              
+              if (error) {
+                console.error('❌ 前端更新 Supabase 失败:', error);
+                console.error('💡 提示：请检查 Supabase 的 RLS 策略是否允许 UPDATE');
+              } else {
+                console.log('✅ 前端成功更新 Supabase！');
+              }
+            } catch (err) {
+              console.error('❌ 前端更新 Supabase 异常:', err);
+            }
+            
             setVideoStatus('✅ 多图流短视频一键生成大获全胜！');
             setIsVideoLoading(false);
           } else if (statusData.status === 'failed') {
@@ -102,7 +170,9 @@ export default function PropertyDetailPage() {
         }, 2500);
       }
     } catch (err: any) {
-      console.error(err);
+      console.error('========================================');
+      console.error('❌ 生成视频出错:', err);
+      console.error('========================================');
       setRawStatus('failed');
       setVideoStatus(`❌ 发生异常: ${err.message}`);
       setIsVideoLoading(false);
@@ -352,6 +422,8 @@ export default function PropertyDetailPage() {
                   cursor: isVideoLoading ? 'not-allowed' : 'pointer',
                   background: isVideoLoading 
                     ? 'linear-gradient(to right, #1e293b, #334155)'
+                    : generatedVideoUrl 
+                    ? 'linear-gradient(to right, #f59e0b, #d97706)'
                     : 'linear-gradient(to right, #9333ea, #4f46e5)',
                   color: isVideoLoading ? '#64748b' : '#ffffff',
                   transition: 'all 0.2s ease'
@@ -364,8 +436,8 @@ export default function PropertyDetailPage() {
                   </>
                 ) : (
                   <>
-                    <span>🎬</span>
-                    <span>一键生成 TikTok/Shorts 营销短视频</span>
+                    <span>{generatedVideoUrl ? '🔄' : '🎬'}</span>
+                    <span>{generatedVideoUrl ? '重新生成 TikTok/Shorts 营销短视频' : '一键生成 TikTok/Shorts 营销短视频'}</span>
                   </>
                 )}
               </button>
